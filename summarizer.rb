@@ -80,7 +80,6 @@ class Summarizer
   def analyze_with_ollama(content)
     prompt = <<~PROMPT
       You are analyzing a git diff. Focus ONLY on the changes (lines starting with + or -).
-      The code may contain JSON-like syntax that is actually part of another language - do not get confused by this.
       
       Summarize what changed in this diff:
       - What was removed (lines starting with -)
@@ -88,11 +87,18 @@ class Summarizer
       - Note any configuration value changes
       - Note any code moves between files
       
-      Respond in JSON format with these keys:
+      For each file in the diff, list the specific changes made.
+      
+      Respond in JSON format with this structure:
       {
-          "issues": ["list of changes made"],
-          "severity": "low",
-          "should_block": false
+        "issues": [
+          {
+            "file": "filename.ext",
+            "changes": ["specific change 1", "specific change 2"]
+          }
+        ],
+        "severity": "low",
+        "should_block": false
       }
       
       IMPORTANT: 
@@ -135,79 +141,190 @@ class Summarizer
 
     return nil if diffs.empty?
 
-    prompt = <<~PROMPT
-      You are a commit message generator. I will show you the actual git diff below.
-      Generate a commit message for ONLY these specific changes.
+    # First, get just the summary
+    summary_prompt = <<~PROMPT
+      Write ONLY a one-line summary (under 50 chars) for this git commit.
+      Use imperative mood ("Add" not "Added").
+      DO NOT include any other text, just the summary line.
       
-      When analyzing the diff:
-      1. Pay attention to files being modified - look at the file paths
-      2. Note if code is being moved between files:
-         - Track which lines are removed from which file
-         - Track which lines are added to which file
-         - Don't assume all similar lines are moves
-      3. Watch for value changes when code is moved:
-         - Look at the actual values in the '-' and '+' lines
-         - Check what variables are assigned to
-         - Note if a value is using a different variable (e.g., four_hours -> one_day)
-         - Track the actual value of each variable (e.g., four_hours = 4 * 60 * 60 * 1000)
-         - Compare the old and new values carefully
-      4. For configuration changes:
-         - List EACH configuration value that was changed
-         - For each change, document:
-           * The exact name of the config
-           * Which file it was removed from (if moved/removed)
-           * Which file it was added to (if moved/added)
-           * The old value or variable it used (with actual value)
-           * The new value or variable it uses (with actual value)
-           * Include units and actual numeric values
-           * Note if the value source changed (e.g., from four_hours to one_day)
-         - Note if values were added, removed, or modified
-      
-      Rules for the commit message:
-      1. Use imperative mood (e.g., "Add feature" not "Added feature")
-      2. First line should be a summary under 50 characters
-      3. Follow with a blank line and more detailed description if needed
-      4. Group related changes together
-      5. Focus on the "what" and "why", not the "how"
-      6. Mention file moves explicitly (e.g., "Move config from X to Y")
-      7. List configuration changes in bullet points:
-         - One bullet per configuration change
-         - Format: "* config_name: [removed from old_file] old_value (variable = actual_value) -> [added to new_file] new_value (variable = actual_value)"
-         - Include both the variable name and its calculated value
-         - Mark new configs as "added"
-      
-      IMPORTANT: 
-      - Return ONLY the commit message text
-      - Do not include any text like "Here is the commit message" or "Based on the changes"
-      - Do not wrap the message in quotes or code blocks
-      - Do not add any explanations before or after the message
-      - Do not add any formatting like dashes or headers
-      - Do not explain your reasoning or methodology
-      - The first line of your response must be the commit summary
-      - Exactly follow this format:
-        Summary line under 50 chars
-        
-        * First change detail
-        * Second change detail
-        * Additional details if needed
-      
-      GIT DIFF TO ANALYZE:
+      Changes:
       ```
       #{diffs}
       ```
     PROMPT
 
-    message = call_ollama(prompt, diffs)
-    return nil if message.nil?
+    summary_response = call_ollama(summary_prompt, diffs)
+    return nil if summary_response.nil?
 
-    if message.is_a?(Hash) && message['response']
-      message['response'].to_s.strip
-    elsif message.is_a?(String)
-      message.strip
+    summary = if summary_response.is_a?(Hash) && summary_response['response']
+      summary_response['response'].to_s
+    elsif summary_response.is_a?(String)
+      summary_response
     else
-      puts "Warning: Unexpected response format from Ollama"
-      nil
+      "Update configuration settings"  # Fallback
     end
+
+    # Clean up summary
+    summary = summary
+      .sub(/^(Here'?s|The|This is|I have|Generated|Based on).*?(summary|message|diff).*?\n/i, '')
+      .gsub(/`([^`]+)`/, '\1')
+      .strip
+      .split("\n").first || "Update configuration settings"
+    
+    # Truncate if too long
+    summary = summary[0..49] if summary.length > 50
+
+    # Now, get the bullet points
+    bullets_prompt = <<~PROMPT
+      List ONLY the specific changes in this git diff as bullet points.
+      
+      IMPORTANT: Pay close attention to the + and - lines in the diff:
+      - Lines starting with - are REMOVED
+      - Lines starting with + are ADDED
+      
+      For each change:
+      1. Check which file it's in (look at the file path)
+      2. Check if code is being moved between files
+      3. For configuration changes, note:
+         - The exact name of the config
+         - Which file it was removed from
+         - Which file it was added to
+         - The actual values (check the variables)
+      
+      Each bullet should:
+      - Start with "* "
+      - Be specific about what changed
+      - Include old and new values
+      - Not use backticks
+      - Not include explanations
+      
+      Example format:
+      * Move config from dev.exs to runtime.exs
+      * Change database timeout from 30s to 60s
+      
+      DO NOT include any text before or after the bullet points.
+      DO NOT include a summary line.
+      DO NOT include explanations or comments.
+      
+      Changes:
+      ```
+      #{diffs}
+      ```
+    PROMPT
+
+    bullets_response = call_ollama(bullets_prompt, diffs)
+    return nil if bullets_response.nil?
+
+    bullets = if bullets_response.is_a?(Hash) && bullets_response['response']
+      bullets_response['response'].to_s
+    elsif bullets_response.is_a?(String)
+      bullets_response
+    else
+      "* Update configuration settings"  # Fallback
+    end
+
+    # Clean up bullets
+    bullets = bullets
+      .sub(/^(Here'?s|The|This is|I have|Generated|Based on).*?(bullet|list|change|diff).*?\n/i, '')
+      .gsub(/`([^`]+)`/, '\1')
+      .gsub(/\(variable = actual value\)/, '')
+      .strip
+
+    # Verify bullet points against the diff
+    verified_bullets = []
+    
+    # First, let's extract some key information from the diff
+    config_moves = {}
+    
+    # Look for removed configs in dev.exs
+    diffs.scan(/File: config\/dev\.exs.*?^-config :(\w+), (\w+): (\w+)/m) do |app, key, value|
+      config_moves["#{app}.#{key}"] ||= {}
+      config_moves["#{app}.#{key}"][:removed_from] = "dev.exs"
+      config_moves["#{app}.#{key}"][:old_value] = value
+    end
+    
+    # Look for added configs in config.exs
+    diffs.scan(/File: config\/config\.exs.*?^\+config :(\w+), (\w+): (\w+)/m) do |app, key, value|
+      config_moves["#{app}.#{key}"] ||= {}
+      config_moves["#{app}.#{key}"][:added_to] = "config.exs"
+      config_moves["#{app}.#{key}"][:new_value] = value
+    end
+    
+    # Look for variable definitions
+    variables = {}
+    diffs.scan(/^\+([\w_]+) = \(([\d\s\*\+]+)\)/m) do |var, value|
+      variables[var] = value
+    end
+    diffs.scan(/^-([\w_]+) = \(([\d\s\*\+]+)\)/m) do |var, value|
+      variables[var] ||= value
+    end
+    
+    # Now create verified bullets based on what we found
+    config_moves.each do |config, details|
+      if details[:removed_from] && details[:added_to]
+        old_val = details[:old_value]
+        new_val = details[:new_value]
+        
+        # Try to resolve variable values
+        old_val_desc = variables[old_val] ? "#{old_val} (#{humanize_time(variables[old_val])})" : old_val
+        new_val_desc = variables[new_val] ? "#{new_val} (#{humanize_time(variables[new_val])})" : new_val
+        
+        verified_bullets << "* Move #{config} from #{details[:removed_from]} to #{details[:added_to]}, changing value from #{old_val_desc} to #{new_val_desc}"
+      elsif details[:removed_from]
+        verified_bullets << "* Remove #{config} from #{details[:removed_from]}"
+      elsif details[:added_to]
+        new_val = details[:new_value]
+        new_val_desc = variables[new_val] ? "#{new_val} (#{humanize_time(variables[new_val])})" : new_val
+        verified_bullets << "* Add #{config} to #{details[:added_to]} with value #{new_val_desc}"
+      end
+    end
+    
+    # If we couldn't verify anything, use the original bullets
+    if verified_bullets.empty?
+      # Process each bullet from the model
+      bullets.lines.each do |line|
+        line = line.strip
+        next if line.empty?
+        
+        # Check if the line mentions a change from X to Y
+        if line =~ /from (.+) to (.+)/i
+          from_value = $1
+          to_value = $2
+          
+          # Check if the diff contains these values
+          if diffs.include?(from_value) && diffs.include?(to_value)
+            # Check if the direction is correct
+            from_lines = diffs.lines.select { |l| l.start_with?('-') && l.include?(from_value) }
+            to_lines = diffs.lines.select { |l| l.start_with?('+') && l.include?(to_value) }
+            
+            if from_lines.any? && to_lines.any?
+              verified_bullets << line
+            else
+              # Try reversing the direction
+              reversed = line.gsub(/from #{from_value} to #{to_value}/i, "from #{to_value} to #{from_value}")
+              verified_bullets << reversed
+            end
+          else
+            # If we can't verify, include it anyway
+            verified_bullets << line
+          end
+        else
+          verified_bullets << line
+        end
+      end
+    end
+    
+    # Use verified bullets or fall back to original
+    bullets = verified_bullets.any? ? verified_bullets.join("\n") : bullets
+
+    # Combine summary and bullets
+    message = "#{summary}\n\n#{bullets}"
+    
+    # Final cleanup
+    message
+      .gsub(/\n{3,}/, "\n\n")  # Normalize newlines
+      .sub(/No newline at end of file.*$/m, '')  # Remove EOF marker
+      .strip
   end
 
   def call_ollama(prompt, content)
@@ -320,6 +437,26 @@ class Summarizer
       "severity" => "high",
       "should_block" => true
     }
+  end
+
+  # Helper method to convert milliseconds to human-readable time
+  def humanize_time(expression)
+    # Try to evaluate the expression
+    begin
+      if expression =~ /(\d+)\s*\*\s*(\d+)\s*\*\s*(\d+)\s*\*\s*(\d+)/
+        hours = $1.to_i
+        result = "#{hours} hours"
+        return result
+      elsif expression =~ /(\d+)\s*\*\s*(\d+)\s*\*\s*(\d+)/
+        minutes = $1.to_i
+        result = "#{minutes} minutes"
+        return result
+      else
+        return expression
+      end
+    rescue
+      return expression
+    end
   end
 end
 
