@@ -1,0 +1,47 @@
+File: commit_messages/successful_8.txt
+diff --git a/commit_messages/successful_8.txt b/commit_messages/successful_8.txt
+new file mode 100644
+index 0000000..aaaf288
+--- /dev/null
++++ b/commit_messages/successful_8.txt
+@@ -0,0 +1,7 @@
++#llama3.1:8b
++Here's the commit message based on the given diff:
++
++"Update configs for improved performance and security"
++
++* `cache_ttl` in `blog`: 4 hours -> 1 day (variable = actual value)
++* `cache_ttl_long` in `blog`: 24 hours -> 1 day (variable = actual value)
+\ No newline at end of file
+
+File: config/config.exs
+diff --git a/config/config.exs b/config/config.exs
+index a03853e..f9695a1 100644
+--- a/config/config.exs
++++ b/config/config.exs
+@@ -62,3 +62,9 @@ config :phoenix, :json_library, Jason
+ # Import environment specific config. This must remain at the bottom
+ # of this file so it overrides the configuration defined above.
+ import_config "#{config_env()}.exs"
++
++four_hours = (4 * 60 * 60 * 1000)
++one_day = (24 * 60 * 60 * 1000)
++
++config :blog, cache_ttl: four_hours
++config :blog, cache_ttl_long: one_day
+
+File: config/dev.exs
+diff --git a/config/dev.exs b/config/dev.exs
+index 79920fc..d575e91 100644
+--- a/config/dev.exs
++++ b/config/dev.exs
+@@ -77,9 +77,3 @@ config :phoenix, :plug_init_mode, :runtime
+ 
+ # Disable swoosh api client as it is only required for production adapters.
+ config :swoosh, :api_client, false
+-
+-four_hours = (4 * 60 * 60 * 1000)
+-one_day = (24 * 60 * 60 * 1000)
+-
+-config :blog, cache_ttl: one_day
+-config :blog, cache_ttl_long: one_d

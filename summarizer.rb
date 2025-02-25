@@ -320,11 +320,62 @@ class Summarizer
     # Combine summary and bullets
     message = "#{summary}\n\n#{bullets}"
     
-    # Final cleanup
-    message
-      .gsub(/\n{3,}/, "\n\n")  # Normalize newlines
-      .sub(/No newline at end of file.*$/m, '')  # Remove EOF marker
-      .strip
+    # Final cleanup and formatting
+    formatted_lines = []
+    
+    # Process each line to enforce character limits
+    message.lines.each_with_index do |line, index|
+      line = line.to_s.rstrip  # Add to_s to handle nil
+      
+      if index == 0
+        # Summary line: 50 chars max
+        formatted_lines << line[0..49] if line.length > 0
+      else
+        # Body lines: 72 chars max
+        if line.length > 72
+          # For bullet points, preserve the bullet and wrap at word boundaries
+          if line.start_with?('* ')
+            # Keep the bullet for the first line
+            current_line = line[0..71]
+            
+            # Try to find a good breaking point
+            if current_line.rindex(' ', 70) && current_line.rindex(' ', 70) > 2
+              break_at = current_line.rindex(' ', 70)
+              formatted_lines << current_line[0..break_at]
+              remaining = line[(break_at+1)..]
+            else
+              formatted_lines << current_line
+              remaining = line[72..]
+            end
+            
+            # Wrap remaining text with proper indentation at word boundaries
+            while remaining && remaining.length > 0
+              if remaining.length <= 70
+                formatted_lines << "  #{remaining}"
+                break
+              end
+              
+              # Find word boundary
+              if remaining.rindex(' ', 69) && remaining.rindex(' ', 69) > 0
+                break_at = remaining.rindex(' ', 69)
+                formatted_lines << "  #{remaining[0..break_at]}"
+                remaining = remaining[(break_at+1)..]
+              else
+                formatted_lines << "  #{remaining[0..69]}"
+                remaining = remaining[70..]
+              end
+            end
+          else
+            # Regular line wrapping at word boundaries
+            formatted_lines << line[0..71]
+          end
+        else
+          formatted_lines << line
+        end
+      end
+    end
+    
+    formatted_lines.join("\n").gsub(/\n{3,}/, "\n\n").strip
   end
 
   def call_ollama(prompt, content)
