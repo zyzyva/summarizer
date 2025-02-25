@@ -3,10 +3,16 @@ require 'json'
 require 'net/http'
 
 class Summarizer
+  VERSION = "1.0.0"
   ANALYZABLE_EXTENSIONS = %w[.rb .ex .exs].freeze
   OLLAMA_URL = 'http://localhost:11434/api/generate'
 
   def self.run(commit_msg_file, commit_source)
+    if ARGV.include?('--version') || ARGV.include?('-v')
+      puts "Git Commit Message Generator v#{VERSION}"
+      exit(0)
+    end
+    
     new.run(commit_msg_file, commit_source)
   end
 
